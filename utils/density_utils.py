@@ -3,13 +3,15 @@ import numpy as np
 
 def generate_density_map_tensor(keypoints, image_shape, sigma=3.0):
     """
-    Generate density map from keypoints
+    Generate density map from keypoints using a Gaussian kernel.
+    
     Args:
         keypoints: Array [N, 2] with (x, y) coordinates
         image_shape: (H, W) target shape
-        sigma: Gaussian sigma
+        sigma: Standard deviation for Gaussian kernel
+        
     Returns:
-        density_map: Tensor [H, W] where sum ≈ len(keypoints)
+        density_map: Tensor [H, W] where sum approx equals len(keypoints)
     """
     H, W = image_shape
     density_map = torch.zeros((H, W), dtype=torch.float32)
@@ -33,10 +35,12 @@ def generate_density_map_tensor(keypoints, image_shape, sigma=3.0):
 
     for p in pts:
         x, y = int(p[0]), int(p[1])
+        
+        # Skip points outside the image
         if not (0 <= x < W and 0 <= y < H):
             continue
 
-        # Apply kernel
+        # Determine bounds
         y1 = max(0, y - size // 2)
         y2 = min(H, y + size // 2 + 1)
         x1 = max(0, x - size // 2)
@@ -49,7 +53,7 @@ def generate_density_map_tensor(keypoints, image_shape, sigma=3.0):
 
         density_map[y1:y2, x1:x2] += kernel[ky1:ky2, kx1:kx2]
 
-    # Normalize to preserve count
+    # Normalize to ensure the count is exactly preserved (optional but recommended)
     person_count = len(pts)
     total_sum = density_map.sum()
     if total_sum > 0 and person_count > 0:

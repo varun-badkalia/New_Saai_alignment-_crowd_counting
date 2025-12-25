@@ -1,30 +1,30 @@
-# models/saai_aligner.py
-"""
-SAAI: Semantic Adversarial Alignment module (FULL VERSION)
-This is the OLD working version with cross-attention
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class SemanticAdversarialAligner(nn.Module):
-    """Full SAAI module with prototypes + cross-attention + domain adversarial"""
+    """
+    SAAI module for RGB-Thermal Crowd Counting.
+    Features:
+    1. Prototype Alignment (Semantic)
+    2. Cross-Attention (Soft Spatial)
+    3. Domain Adversarial Discriminator
+    """
     
     def __init__(self, feature_dim=512, num_prototypes=64, num_heads=8):
         super(SemanticAdversarialAligner, self).__init__()
         self.feature_dim = feature_dim
         self.num_prototypes = num_prototypes
         
-        # Semantic prototypes for crowd counting scenes
+        # 1. Semantic Prototypes (Learnable "Cluster Centers")
         self.prototypes = nn.Parameter(torch.randn(num_prototypes, feature_dim))
         nn.init.kaiming_normal_(self.prototypes, mode='fan_out', nonlinearity='relu')
         
-        # Cross-modal attention mechanism (KEY COMPONENT!)
+        # 2. Cross-Modal Attention (Soft Alignment)
         self.cross_attention_rgb = nn.MultiheadAttention(feature_dim, num_heads, batch_first=True)
         self.cross_attention_thermal = nn.MultiheadAttention(feature_dim, num_heads, batch_first=True)
         
-        # Feature transformation networks
+        # Feature Transformations
         self.rgb_transform = nn.Sequential(
             nn.Conv2d(feature_dim, feature_dim, 3, padding=1),
             nn.BatchNorm2d(feature_dim),
@@ -41,7 +41,7 @@ class SemanticAdversarialAligner(nn.Module):
             nn.BatchNorm2d(feature_dim)
         )
         
-        # Domain discriminator for adversarial alignment (KEY COMPONENT!)
+        # 3. Domain Discriminator (Adversarial)
         self.domain_classifier = nn.Sequential(
             nn.Linear(feature_dim, 256),
             nn.ReLU(inplace=True),
@@ -49,14 +49,7 @@ class SemanticAdversarialAligner(nn.Module):
             nn.Linear(256, 128),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
-            nn.Linear(128, 2)  # RGB vs Thermal
-        )
-        
-        # Semantic consistency projector
-        self.semantic_projector = nn.Sequential(
-            nn.Linear(feature_dim, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, feature_dim)
+            nn.Linear(128, 2)  # 0: RGB, 1: Thermal
         )
 
     def prototype_alignment(self, features):
@@ -64,12 +57,12 @@ class SemanticAdversarialAligner(nn.Module):
         B, C, H, W = features.shape
         features_flat = features.view(B, C, -1).permute(0, 2, 1)  # [B, HW, C]
         
-        # Compute prototype similarities
+        # Compute similarity to prototypes
         prototypes = F.normalize(self.prototypes, dim=1)
         features_norm = F.normalize(features_flat, dim=2)
         similarities = torch.matmul(features_norm, prototypes.T)  # [B, HW, num_prototypes]
         
-        # Soft assignment to prototypes
+        # Soft assignment
         assignments = F.softmax(similarities, dim=2)
         aligned_features = torch.matmul(assignments, prototypes)  # [B, HW, C]
         
@@ -77,46 +70,39 @@ class SemanticAdversarialAligner(nn.Module):
 
     def forward(self, rgb_features, thermal_features):
         """
-        Forward pass for FULL semantic adversarial alignment
-        
         Args:
-            rgb_features: [B, C, H, W] RGB feature maps
-            thermal_features: [B, C, H, W] Thermal feature maps
-        
+            rgb_features: [B, C, H, W]
+            thermal_features: [B, C, H, W]
         Returns:
-            rgb_final: [B, C, H, W] Aligned RGB features
-            thermal_final: [B, C, H, W] Aligned Thermal features
-            domain_pred_rgb: [B, 2] Domain predictions for RGB
-            domain_pred_thermal: [B, 2] Domain predictions for Thermal
+            rgb_final, thermal_final, domain_pred_rgb, domain_pred_thermal
         """
         B, C, H, W = rgb_features.shape
         
-        # Transform features through modality-specific networks
+        # Transform
         rgb_transformed = self.rgb_transform(rgb_features)
         thermal_transformed = self.thermal_transform(thermal_features)
         
-        # Prototype-based semantic alignment
-        rgb_proto_aligned = self.prototype_alignment(rgb_transformed)
-        thermal_proto_aligned = self.prototype_alignment(thermal_transformed)
+        # Semantic Alignment (Prototypes)
+        rgb_proto = self.prototype_alignment(rgb_transformed)
+        thermal_proto = self.prototype_alignment(thermal_transformed)
         
-        # Cross-modal attention alignment (SPATIAL ALIGNMENT!)
-        rgb_flat = rgb_proto_aligned.view(B, C, -1).permute(0, 2, 1)  # [B, HW, C]
-        thermal_flat = thermal_proto_aligned.view(B, C, -1).permute(0, 2, 1)
+        # Spatial Alignment (Cross-Attention)
+        rgb_flat = rgb_proto.view(B, C, -1).permute(0, 2, 1)      # [B, HW, C]
+        thermal_flat = thermal_proto.view(B, C, -1).permute(0, 2, 1)
         
-        # RGB attended by thermal features
+        # RGB queries Thermal
         rgb_attended, _ = self.cross_attention_rgb(rgb_flat, thermal_flat, thermal_flat)
-        # Thermal attended by RGB features
+        # Thermal queries RGB
         thermal_attended, _ = self.cross_attention_thermal(thermal_flat, rgb_flat, rgb_flat)
         
-        # Reshape back to spatial format
+        # Reshape & Residual
         rgb_aligned = rgb_attended.permute(0, 2, 1).view(B, C, H, W)
         thermal_aligned = thermal_attended.permute(0, 2, 1).view(B, C, H, W)
         
-        # Add residual connections for stable training
         rgb_final = rgb_aligned + rgb_features
         thermal_final = thermal_aligned + thermal_features
         
-        # Domain classification for adversarial training (SEMANTIC ALIGNMENT!)
+        # Domain Discrimination
         rgb_pooled = F.adaptive_avg_pool2d(rgb_final, 1).view(B, -1)
         thermal_pooled = F.adaptive_avg_pool2d(thermal_final, 1).view(B, -1)
         
